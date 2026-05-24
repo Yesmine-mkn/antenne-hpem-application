@@ -659,7 +659,7 @@ def make_report(results: dict) -> str:
     )
     lines.append("")
     lines.append("## Parametres d'entree")
-    lines.append(f"- Frequence centrale: {fmt(p['f_center_ghz'], 3)} GHz")
+    lines.append(f"- Frequence de travail f0: {fmt(p['f_center_ghz'], 3)} GHz")
     lines.append(f"- Bande: {fmt(p['f_min_ghz'], 3)} - {fmt(p['f_max_ghz'], 3)} GHz")
     lines.append(f"- Type de guide: {p['guide_type']}")
     lines.append(f"- Longueur du cornet: {fmt(p['horn_length_mm'], 1)} mm")
@@ -918,7 +918,7 @@ def make_academic_pdf_report(results: dict) -> bytes | None:
     paragraph("Ce rapport presente une synthese parametrique des performances d'une antenne cornet HPEM en bande S. Il relie les dimensions geometriques, les defauts de fabrication et les consequences electromagnetiques attendues, en fournissant des recommandations d'optimisation et de validation experimentale.")
     heading("2. Parametres d'entree")
     table(["Parametre", "Valeur"], [
-        ["Frequence centrale", f"{p['f_center_ghz']:.3f} GHz"],
+        ["Frequence de travail f0", f"{p['f_center_ghz']:.3f} GHz"],
         ["Bande de frequence", f"{p['f_min_ghz']:.3f} - {p['f_max_ghz']:.3f} GHz"],
         ["Guide d'onde", p['guide_type']],
         ["Longueur L", f"{p['horn_length_mm']:.1f} mm"],
@@ -1142,7 +1142,7 @@ def make_pdf_report(results: dict) -> bytes | None:
     # Results page
     pdf.add_page()
     section(pdf, "1. Parametres et validation modale")
-    bullet(pdf, f"Frequence centrale: {p['f_center_ghz']:.3f} GHz ; bande: {p['f_min_ghz']:.3f}-{p['f_max_ghz']:.3f} GHz")
+    bullet(pdf, f"Frequence de travail f0: {p['f_center_ghz']:.3f} GHz ; bande: {p['f_min_ghz']:.3f}-{p['f_max_ghz']:.3f} GHz")
     bullet(pdf, f"Guide: {p['guide_type']} ; coupure TE10: {th['fc_te10_ghz']:.3f} GHz ; premier mode superieur: {th['upper_mode_ghz']:.3f} GHz")
     bullet(pdf, f"Ouverture: {p['aperture_width_mm']:.1f} x {p['aperture_height_mm']:.1f} mm ; longueur: {p['horn_length_mm']:.1f} mm")
     bullet(pdf, f"Etat modal: {th['mode_status']}")
@@ -1726,10 +1726,17 @@ def frequency_response_data(results: dict, n: int = 61) -> dict:
     corr = results["corrected"]
     fmin = float(p["f_min_ghz"])
     fmax = float(p["f_max_ghz"])
-    fc = float(p["f_center_ghz"])
+    f0 = float(p["f_center_ghz"])
     if fmax <= fmin:
-        fmin = max(0.1, fc - 0.1)
-        fmax = fc + 0.1
+        fmin = max(0.1, f0 - 0.1)
+        fmax = f0 + 0.1
+    # La frequence de travail f0 doit toujours apparaitre dans les courbes.
+    # On conserve la bande saisie pour le balayage, mais on etend legerement l'echelle si necessaire.
+    span0 = max(fmax - fmin, 0.2)
+    if f0 < fmin:
+        fmin = max(0.1, f0 - 0.08 * span0)
+    if f0 > fmax:
+        fmax = f0 + 0.08 * span0
     area = float(th["aperture_area_m2"])
     eta = float(p["aperture_efficiency"])
     fab_loss = float(fab["penalties"]["total_loss_db"])
@@ -1739,7 +1746,11 @@ def frequency_response_data(results: dict, n: int = 61) -> dict:
     corr_s11_c = float(corr["penalties"]["s11_db"])
     hp_score = float(fab["hpem"]["score_hpem"])
     corr_score = float(corr["hpem"]["score_hpem"])
-    xs = []
+    # Ajouter explicitement f0 dans les points de calcul pour que les valeurs affichees
+    # sur les marqueurs correspondent aux valeurs cibles a verifier.
+    x_samples = [fmin + (fmax - fmin) * i / max(n - 1, 1) for i in range(n)]
+    x_samples.append(f0)
+    xs = sorted(set(round(v, 12) for v in x_samples))
     g_th = []
     g_fab = []
     g_corr = []
@@ -1749,13 +1760,11 @@ def frequency_response_data(results: dict, n: int = 61) -> dict:
     score_fab = []
     score_corr = []
     span = max(fmax - fmin, 1e-6)
-    for i in range(n):
-        f = fmin + (fmax - fmin) * i / max(n - 1, 1)
+    for f in xs:
         lam = 299792458.0 / (f * 1e9)
         gain_lin = max(eta, 0.01) * 4.0 * math.pi * max(area, 1e-12) / (lam ** 2)
         gain_db = 10.0 * math.log10(max(gain_lin, 1e-12))
-        detune = abs(f - fc) / (span / 2.0)
-        xs.append(f)
+        detune = abs(f - f0) / (span / 2.0)
         g_th.append(gain_db)
         g_fab.append(gain_db - fab_loss - 0.20 * detune)
         g_corr.append(gain_db - corr_loss - 0.10 * detune)
@@ -1776,7 +1785,6 @@ def frequency_response_data(results: dict, n: int = 61) -> dict:
         "score_corrige": score_corr,
     }
 
-
 def svg_polyline(xs: list[float], ys: list[float], xmin: float, xmax: float, ymin: float, ymax: float, left: float, top: float, width: float, height: float) -> str:
     pts = []
     for x, y in zip(xs, ys):
@@ -1786,7 +1794,7 @@ def svg_polyline(xs: list[float], ys: list[float], xmin: float, xmax: float, ymi
     return " ".join(pts)
 
 
-def multi_curve_svg(title: str, x_label: str, y_label: str, xs: list[float], series: list[tuple[str, list[float], str]], unit: str = "") -> str:
+def multi_curve_svg(title: str, x_label: str, y_label: str, xs: list[float], series: list[tuple[str, list[float], str]], unit: str = "", f0: float | None = None) -> str:
     width = 760
     height = 360
     left, right, top, bottom = 72, 28, 56, 58
@@ -1798,6 +1806,30 @@ def multi_curve_svg(title: str, x_label: str, y_label: str, xs: list[float], ser
     pad = max((ymax - ymin) * 0.12, 0.5)
     ymin -= pad
     ymax += pad
+
+    def xpix(xv: float) -> float:
+        return left + (xv - xmin) / max(xmax - xmin, 1e-9) * plot_w
+
+    def ypix(yv: float) -> float:
+        return top + (ymax - yv) / max(ymax - ymin, 1e-9) * plot_h
+
+    def interp_y(xvals: list[float], yvals: list[float], x0: float) -> float | None:
+        if not xvals:
+            return None
+        if x0 <= xvals[0]:
+            return yvals[0]
+        if x0 >= xvals[-1]:
+            return yvals[-1]
+        for i in range(len(xvals) - 1):
+            x1, x2 = xvals[i], xvals[i + 1]
+            if x1 <= x0 <= x2:
+                y1, y2 = yvals[i], yvals[i + 1]
+                if abs(x2 - x1) < 1e-12:
+                    return y1
+                t = (x0 - x1) / (x2 - x1)
+                return y1 + t * (y2 - y1)
+        return None
+
     grid = []
     for k in range(5):
         y = top + plot_h * k / 4
@@ -1809,10 +1841,35 @@ def multi_curve_svg(title: str, x_label: str, y_label: str, xs: list[float], ser
         grid.append(f"<line x1='{x:.1f}' y1='{top}' x2='{x:.1f}' y2='{top+plot_h}' stroke='#f1f5f9'/><text x='{x:.1f}' y='{top+plot_h+20}' text-anchor='middle' font-size='12' fill='#475569'>{val:.2f}</text>")
     curves = []
     legend = []
+    marker_points = []
+    value_lines = []
+    value_y = top + 38
     for i, (name, vals, color) in enumerate(series):
         pts = svg_polyline(xs, vals, xmin, xmax, ymin, ymax, left, top, plot_w, plot_h)
         curves.append(f"<polyline points='{pts}' fill='none' stroke='{color}' stroke-width='3'/>")
         legend.append(f"<rect x='{left + i*170}' y='28' width='14' height='14' fill='{color}' rx='2'/><text x='{left + i*170 + 20}' y='40' font-size='13'>{html.escape(name)}</text>")
+        if f0 is not None and xmin <= f0 <= xmax:
+            y0 = interp_y(xs, vals, f0)
+            if y0 is not None:
+                px = xpix(f0)
+                py = ypix(y0)
+                marker_points.append(f"<circle cx='{px:.1f}' cy='{py:.1f}' r='4.8' fill='{color}' stroke='white' stroke-width='1.8'/>")
+                value_lines.append(f"<text x='{left + plot_w - 178}' y='{value_y:.1f}' font-size='11' fill='{color}' font-weight='bold'>{html.escape(name)} = {y0:.2f} {html.escape(unit)}</text>")
+                value_y += 16
+    f0_marker = ""
+    if f0 is not None and xmin <= f0 <= xmax:
+        fx = xpix(f0)
+        box_h = max(34, 24 + 16 * len(value_lines))
+        f0_marker = (
+            f"<line x1='{fx:.1f}' y1='{top}' x2='{fx:.1f}' y2='{top+plot_h}' stroke='#ef4444' stroke-width='2.4' stroke-dasharray='6 4'/>"
+            f"<rect x='{fx-46:.1f}' y='{top+6}' width='92' height='22' rx='8' fill='#fee2e2' stroke='#ef4444'/>"
+            f"<text x='{fx:.1f}' y='{top+21}' text-anchor='middle' font-size='12' fill='#991b1b' font-weight='bold'>f0 = {f0:.3f} GHz</text>"
+            f"<rect x='{left + plot_w - 190}' y='{top + 18}' width='176' height='{box_h}' rx='10' fill='white' stroke='#cbd5e1' opacity='0.96'/>"
+            + ''.join(value_lines)
+            + ''.join(marker_points)
+        )
+    elif f0 is not None:
+        f0_marker = f"<text x='{left}' y='{height-38}' font-size='12' fill='#991b1b'>f0 = {f0:.3f} GHz hors de l'echelle</text>"
     return f"""
     <svg viewBox='0 0 {width} {height}' width='100%' height='{height}' xmlns='http://www.w3.org/2000/svg'>
       <rect x='1' y='1' width='{width-2}' height='{height-2}' rx='14' fill='#fbfcfe' stroke='#d9dee7'/>
@@ -1820,12 +1877,12 @@ def multi_curve_svg(title: str, x_label: str, y_label: str, xs: list[float], ser
       {''.join(legend)}
       {''.join(grid)}
       <rect x='{left}' y='{top}' width='{plot_w}' height='{plot_h}' fill='none' stroke='#94a3b8'/>
+      {f0_marker}
       {''.join(curves)}
       <text x='{left + plot_w/2}' y='{height-18}' text-anchor='middle' font-size='14'>{html.escape(x_label)}</text>
       <text x='18' y='{top + plot_h/2}' transform='rotate(-90 18,{top + plot_h/2})' text-anchor='middle' font-size='14'>{html.escape(y_label)} {html.escape(unit)}</text>
     </svg>
     """
-
 
 def efield_heatmap_svg(params: AntennaParams) -> str:
     guide = WAVEGUIDES[params.guide_type]
@@ -1947,7 +2004,7 @@ def memory_text_block(results: dict) -> str:
     return (
         "L'outil developpe permet de relier les dimensions geometriques du cornet, "
         "les imperfections de fabrication et les indicateurs RF obtenus par calcul parametrique. "
-        f"Pour le guide {p['guide_type']} et une frequence centrale de {p['f_center_ghz']:.2f} GHz, "
+        f"Pour le guide {p['guide_type']} et une frequence de travail f0 de {p['f_center_ghz']:.2f} GHz, "
         f"le gain theorique est estime a {th['gain_dbi']:.2f} dBi, tandis que le gain fabrique est estime a {fab['gain_dbi']:.2f} dBi. "
         "Les cartes qualitatives des champs E et H mettent en evidence les zones sensibles: gorge, transition guide-cornet, soudures internes et aretes de l'ouverture. "
         "Ces zones sont critiques dans un contexte HPEM car elles peuvent provoquer des concentrations locales du champ, des pertes supplementaires et une degradation de la tenue en puissance."
@@ -1985,7 +2042,7 @@ def conformity_assessment(results: dict) -> tuple[str, str, list[dict]]:
         {"Critere": "Guide choisi", "Etat": ok_text(recommended_ok), "Constat": f"Guide selectionne: {p['guide_type']} ; guide conseille par l'application: {selected_auto}."},
         {"Critere": "Bande recommandee", "Etat": ok_text(band_ok), "Constat": f"Bande saisie {p['f_min_ghz']:.2f}-{p['f_max_ghz']:.2f} GHz ; plage {guide.name}: {guide.recommended_min_ghz:.2f}-{guide.recommended_max_ghz:.2f} GHz."},
         {"Critere": "Mode dominant TE10", "Etat": ok_text(te10_ok), "Constat": f"fc(TE10) = {guide.fc_te10_ghz:.3f} GHz ; premier mode superieur = {guide.upper_mode_ghz:.3f} GHz."},
-        {"Critere": "Frequence centrale", "Etat": ok_text(center_ok), "Constat": f"f0 = {p['f_center_ghz']:.2f} GHz dans la plage recommandee du guide."},
+        {"Critere": "Frequence de travail f0", "Etat": ok_text(center_ok), "Constat": f"f0 = {p['f_center_ghz']:.2f} GHz dans la plage recommandee du guide."},
         {"Critere": "Adaptation S11", "Etat": ok_text(s11_ok), "Constat": f"S11 estime fabrique = {fab['penalties']['s11_db']:.1f} dB."},
         {"Critere": "Tenue HPEM", "Etat": ok_text(hpem_ok), "Constat": f"Score HPEM = {fab['hpem']['score_hpem']:.0f} %, risque = {fab['hpem']['breakdown_risk']}."},
         {"Critere": "Defauts de fabrication", "Etat": ok_text(defects_ok), "Constat": f"Pertes de fabrication estimees = {fab['penalties']['total_loss_db']:.2f} dB."},
@@ -2473,12 +2530,12 @@ def page_dashboard(results: dict) -> None:
             ("Theorique", sweep["gain_theorique"], "#2563eb"),
             ("Fabrique", sweep["gain_fabrique"], "#f59e0b"),
             ("Corrige", sweep["gain_corrige"], "#059669"),
-        ], "dBi"), height=370)
+        ], "dBi", results["params"]["f_center_ghz"]), height=370)
         components.html(multi_curve_svg("S11(f) - adaptation estimee", "Frequence (GHz)", "S11", sweep["f"], [
             ("Theorique", sweep["s11_theorique"], "#2563eb"),
             ("Fabrique", sweep["s11_fabrique"], "#f59e0b"),
             ("Corrige", sweep["s11_corrige"], "#059669"),
-        ], "dB"), height=370)
+        ], "dB", results["params"]["f_center_ghz"]), height=370)
 
     with tabs[2]:
         components.html(radiation_pattern_svg(th["hpbw_h_deg"], th["hpbw_e_deg"], th["directivity_dbi"]), height=345)
@@ -2564,7 +2621,7 @@ def page_parameters() -> None:
 
     st.subheader("1. Frequence et guide d'onde")
     c1, c2, c3, c4 = st.columns(4)
-    f_center = c1.number_input("Frequence centrale (GHz)", min_value=0.1, max_value=10.0, value=float(p.f_center_ghz), step=0.01)
+    f_center = c1.number_input("Frequence de travail f0 (GHz)", min_value=0.1, max_value=10.0, value=float(p.f_center_ghz), step=0.01)
     f_min = c2.number_input("Borne basse (GHz)", min_value=0.1, max_value=10.0, value=float(p.f_min_ghz), step=0.01)
     f_max = c3.number_input("Borne haute (GHz)", min_value=0.1, max_value=10.0, value=float(p.f_max_ghz), step=0.01)
     names = waveguide_names()
@@ -2575,12 +2632,11 @@ def page_parameters() -> None:
         st.session_state.params.guide_type = guide_type
         st.session_state.params.f_min_ghz = selected_guide.recommended_min_ghz
         st.session_state.params.f_max_ghz = selected_guide.recommended_max_ghz
-        st.session_state.params.f_center_ghz = round((selected_guide.recommended_min_ghz + selected_guide.recommended_max_ghz) / 2.0, 3)
         st.session_state.guide_hint = (
             f"Guide {guide_type} charge automatiquement: dimensions internes "
             f"{selected_guide.a_mm:.2f} x {selected_guide.b_mm:.2f} mm, "
             f"bande recommandee {selected_guide.recommended_min_ghz:.2f}-{selected_guide.recommended_max_ghz:.2f} GHz. "
-            "Les frequences et les calculs seront recalcules avec ce guide."
+            "La bande recommandee est chargee ; la frequence de travail f0 est conservee."
         )
         st.rerun()
 
@@ -2592,7 +2648,6 @@ def page_parameters() -> None:
     if b1.button("Charger automatiquement la bande recommandee du guide"):
         st.session_state.params.f_min_ghz = guide.recommended_min_ghz
         st.session_state.params.f_max_ghz = guide.recommended_max_ghz
-        st.session_state.params.f_center_ghz = round((guide.recommended_min_ghz + guide.recommended_max_ghz) / 2.0, 3)
         st.rerun()
     if b2.button("Mettre seulement la borne haute a la valeur recommandee"):
         st.session_state.params.f_max_ghz = guide.recommended_max_ghz
@@ -2669,7 +2724,7 @@ def page_parameters() -> None:
         st.error("La borne basse doit etre inferieure a la borne haute.")
         return
 
-    st.session_state.params = AntennaParams(
+    new_params = AntennaParams(
         f_center_ghz=f_center,
         f_min_ghz=f_min,
         f_max_ghz=f_max,
@@ -2681,7 +2736,7 @@ def page_parameters() -> None:
         aperture_efficiency=efficiency,
         peak_power_mw=peak_power,
     )
-    st.session_state.defects = FabricationDefects(
+    new_defects = FabricationDefects(
         roughness_um=roughness,
         tolerance_mm=tolerance,
         weld_count=weld_count,
@@ -2690,6 +2745,13 @@ def page_parameters() -> None:
         mastic_present=mastic_present,
         mastic_severity=mastic_severity if mastic_present else 0.0,
     )
+    old_payload = (st.session_state.params.__dict__.copy(), st.session_state.defects.__dict__.copy())
+    new_payload = (new_params.__dict__.copy(), new_defects.__dict__.copy())
+    st.session_state.params = new_params
+    st.session_state.defects = new_defects
+    if old_payload != new_payload:
+        st.toast("Parametres actualises")
+        st.rerun()
 
     st.success("Parametres mis a jour automatiquement.")
     current_results = calculate_all(st.session_state.params, st.session_state.defects)
@@ -2834,7 +2896,7 @@ def page_pfe_diagrams(results: dict) -> None:
     st.write("Cette page regroupe les figures explicatives: courbes parametriques, cartes qualitatives de champ, zones critiques, diagrammes de rayonnement et texte de synthese automatique.")
 
     data = frequency_response_data(results)
-    st.subheader("1. Courbes parametriques en fonction de la frequence")
+    st.subheader(f"1. Courbes parametriques avec marqueur f0 = {results['params']['f_center_ghz']:.3f} GHz")
     components.html(
         multi_curve_svg(
             "Gain estime en fonction de la frequence",
@@ -2847,6 +2909,7 @@ def page_pfe_diagrams(results: dict) -> None:
                 ("Corrige", data["gain_corrige"], "#059669"),
             ],
             "dBi",
+            results["params"]["f_center_ghz"],
         ),
         height=370,
     )
@@ -2862,6 +2925,7 @@ def page_pfe_diagrams(results: dict) -> None:
                 ("Corrige", data["s11_corrige"], "#059669"),
             ],
             "dB",
+            results["params"]["f_center_ghz"],
         ),
         height=370,
     )
@@ -2876,6 +2940,7 @@ def page_pfe_diagrams(results: dict) -> None:
                 ("Corrige", data["score_corrige"], "#059669"),
             ],
             "%",
+            results["params"]["f_center_ghz"],
         ),
         height=370,
     )
@@ -2968,23 +3033,23 @@ def page_optimization(results: dict) -> None:
     st.title("Optimisation")
     st.write("Cette page transforme les resultats en plan d'action: quoi corriger, pourquoi, et quel impact attendre sur le gain, le S11 et la tenue HPEM.")
 
-    st.subheader("Courbes sur la bande de frequence")
+    st.subheader(f"Courbes sur la bande avec marqueur f0 = {results['params']['f_center_ghz']:.3f} GHz")
     sweep = frequency_response_data(results, n=61)
     xs = sweep["f"]
     components.html(multi_curve_svg("Gain(f)", "Frequence (GHz)", "Gain", xs, [
         ("Theorique", sweep["gain_theorique"], "#2563eb"),
         ("Fabrique", sweep["gain_fabrique"], "#059669"),
         ("Corrige", sweep["gain_corrige"], "#f59e0b"),
-    ], "dBi"), height=370)
+    ], "dBi", results["params"]["f_center_ghz"]), height=370)
     components.html(multi_curve_svg("S11(f)", "Frequence (GHz)", "S11", xs, [
         ("Theorique", sweep["s11_theorique"], "#2563eb"),
         ("Fabrique", sweep["s11_fabrique"], "#059669"),
         ("Corrige", sweep["s11_corrige"], "#f59e0b"),
-    ], "dB"), height=370)
+    ], "dB", results["params"]["f_center_ghz"]), height=370)
     components.html(multi_curve_svg("Score HPEM(f)", "Frequence (GHz)", "Score HPEM", xs, [
         ("Fabrique", sweep["score_fabrique"], "#059669"),
         ("Corrige", sweep["score_corrige"], "#f59e0b"),
-    ], "%"), height=370)
+    ], "%", results["params"]["f_center_ghz"]), height=370)
 
     st.subheader("Plan d'action automatique")
     show_table(optimization_rows(results))
